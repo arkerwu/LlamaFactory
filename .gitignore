@@ -169,6 +169,7 @@ uv.lock
 .DS_Store
 
 # custom .gitignore
+docs/superpowers/
 hf_cache/
 ms_cache/
 om_cache/
