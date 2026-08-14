@@ -59,3 +59,14 @@ def test_load_eval_data():
     dataset_module = load_dataset_module(eval_dataset=TINY_DATA, **TRAIN_ARGS)
     assert dataset_module.get("train_dataset") is not None
     assert dataset_module.get("eval_dataset") is not None
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_sample_id_injected():
+    dataset_module = load_dataset_module(**TRAIN_ARGS)
+    train_dataset = dataset_module["train_dataset"]
+    assert "sample_id" in train_dataset.column_names
+    sample_ids = train_dataset["sample_id"]
+    assert len(sample_ids) > 0
+    assert all(str(sid).startswith("llamafactory/tiny-supervised-dataset_") for sid in sample_ids)
+    assert len(set(sample_ids)) == len(sample_ids)  # uniqueness

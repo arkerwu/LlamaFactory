@@ -16,7 +16,7 @@ import os
 from typing import TYPE_CHECKING, Literal, Optional, Union
 
 import numpy as np
-from datasets import Dataset, DatasetDict, load_dataset, load_from_disk
+from datasets import Dataset, DatasetDict, IterableDataset, load_dataset, load_from_disk
 
 from ..extras import logging
 from ..extras.constants import FILEEXT2TYPE
@@ -158,7 +158,11 @@ def _load_single_dataset(
         max_samples = min(data_args.max_samples, len(dataset))
         dataset = dataset.select(range(max_samples))
 
-    return align_dataset(dataset, dataset_attr, data_args, training_args)
+    dataset = align_dataset(dataset, dataset_attr, data_args, training_args)
+    if not isinstance(dataset, IterableDataset):
+        dataset = dataset.add_column("sample_id", [f"{dataset_attr.dataset_name}_{i}" for i in range(len(dataset))])
+
+    return dataset
 
 
 def _get_merged_dataset(
