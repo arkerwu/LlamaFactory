@@ -96,6 +96,7 @@ https://github.com/user-attachments/assets/43b700c6-a178-41db-b1f8-8190a5d3fcfc
   - [从魔乐社区下载](#从魔乐社区下载)
   - [使用 W&B 面板](#使用-wb-面板)
   - [使用 SwanLab 面板](#使用-swanlab-面板)
+  - [通过逐样本 Loss 定位 Loss 尖峰](#通过逐样本-loss-定位-loss-尖峰)
 - [使用了 LlamaFactory 的项目](#使用了-llamafactory-的项目)
 - [协议](#协议)
 - [引用](#引用)
@@ -863,6 +864,24 @@ swanlab_run_name: test_run # 可选
 方式一：在 yaml 文件中添加 `swanlab_api_key=<your_api_key>` ，并设置为你的 [API 密钥](https://swanlab.cn/settings)。
 方式二：将环境变量 `SWANLAB_API_KEY` 设置为你的 [API 密钥](https://swanlab.cn/settings)。
 方式三：启动前使用 `swanlab login` 命令完成登录。
+
+### 通过逐样本 Loss 定位 Loss 尖峰
+
+若要在 SFT 训练中找出**具体是哪些数据导致 Loss 抖动**，请在 yaml 文件中开启逐样本 loss 记录。
+
+```yaml
+record_sample_loss: true
+```
+
+训练时每个 micro-batch 的 loss 会写入 `output_dir/sample_loss.jsonl`，每行格式为 `{"micro_step", "global_step", "sample_id", "loss"}`，其中 `sample_id` 为 `{数据集名}_{行号}`，可直接回溯到原始数据文件。训练结束后，运行分析脚本定位异常样本：
+
+```bash
+python scripts/analyze_sample_loss.py output_dir/sample_loss.jsonl
+```
+
+分析脚本会按样本聚合 loss 统计（出现次数 / 均值 / 最大值 / 最近一次），标记最大 loss 超过 `mean + 2*std` 的样本（可通过 `--z-threshold` 调整），按数据集分组统计异常数，并输出 top-N 异常清单（`--top`），用于数据清洗。
+
+> 注意：当 `per_device_train_batch_size > 1` 时，记录的是 batch 级 loss 并关联到该 batch 内所有样本（粗粒度）。不支持 packing 和 streaming 数据集。
 
 ## 使用了 LlamaFactory 的项目
 

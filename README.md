@@ -95,6 +95,7 @@ Read technical notes:
   - [Download from Modelers Hub](#download-from-modelers-hub)
   - [Use W&B Logger](#use-wb-logger)
   - [Use SwanLab Logger](#use-swanlab-logger)
+  - [Locate Loss Spikes by Per-Sample Loss](#locate-loss-spikes-by-per-sample-loss)
 - [Projects using LlamaFactory](#projects-using-llamafactory)
 - [License](#license)
 - [Citation](#citation)
@@ -861,6 +862,24 @@ When launching training tasks, you can log in to SwanLab in three ways:
 1. Add `swanlab_api_key=<your_api_key>` to the yaml file, and set it to your [API key](https://swanlab.cn/settings).
 2. Set the environment variable `SWANLAB_API_KEY` to your [API key](https://swanlab.cn/settings).
 3. Use the `swanlab login` command to complete the login.
+
+### Locate Loss Spikes by Per-Sample Loss
+
+To find out **which training samples cause loss spikes** during SFT, enable per-sample loss recording in the yaml file.
+
+```yaml
+record_sample_loss: true
+```
+
+Every micro-batch's loss is then written to `output_dir/sample_loss.jsonl` as `{"micro_step", "global_step", "sample_id", "loss"}`, where `sample_id` is `{dataset_name}_{row_index}` referring to the original data file. After training, analyze the records to locate anomalous samples:
+
+```bash
+python scripts/analyze_sample_loss.py output_dir/sample_loss.jsonl
+```
+
+The analyzer aggregates per-sample loss statistics, flags samples whose max loss exceeds `mean + 2*std` (configurable via `--z-threshold`), groups anomalies by dataset, and prints the top offenders (`--top`) for data cleaning.
+
+> Note: with `per_device_train_batch_size > 1` the batch-level loss is recorded against every sample in that batch (coarse-grained). Packing and streaming datasets are not supported.
 
 ## Projects using LlamaFactory
 
