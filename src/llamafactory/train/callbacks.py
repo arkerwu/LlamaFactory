@@ -43,7 +43,7 @@ if is_safetensors_available():
 
 
 if TYPE_CHECKING:
-    from transformers import TrainerControl, TrainerState, TrainingArguments
+    from transformers import Trainer, TrainerControl, TrainerState, TrainingArguments
     from trl import AutoModelForCausalLMWithValueHead
 
     from ..hparams import DataArguments, FinetuningArguments, GeneratingArguments, ModelArguments
@@ -626,3 +626,14 @@ class ModuleProfilerCallback(TrainerCallback):
         for handle in self._handles:
             handle.remove()
         self._handles.clear()
+
+
+class SampleLossFlushCallback(TrainerCallback):
+    r"""A callback for flushing buffered sample loss records to disk on training end."""
+
+    def __init__(self, trainer: "Trainer") -> None:
+        self.trainer = trainer
+
+    @override
+    def on_train_end(self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", **kwargs):
+        self.trainer.flush_sample_loss()

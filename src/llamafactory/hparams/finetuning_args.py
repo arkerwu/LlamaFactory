@@ -575,6 +575,10 @@ class FinetuningArguments(
         default=False,
         metadata={"help": "Whether or not to compute effective tokens per second."},
     )
+    record_sample_loss: bool = field(
+        default=False,
+        metadata={"help": "Whether or not to record per-sample loss during training to `sample_loss.jsonl`."},
+    )
 
     def __post_init__(self):
         def split_arg(arg):

@@ -12,14 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import torch
 from transformers import DataCollatorWithPadding
 
-from llamafactory.data import get_dataset, get_template_and_fix_tokenizer
+from llamafactory.data import MultiModalDataCollatorForSeq2Seq, get_dataset, get_template_and_fix_tokenizer
+from llamafactory.extras.constants import IGNORE_INDEX
 from llamafactory.hparams import get_train_args
 from llamafactory.model import load_model, load_tokenizer
 from llamafactory.train.sft.trainer import CustomSeq2SeqTrainer
@@ -87,3 +91,70 @@ def test_shuffle(disable_shuffling: bool):
         assert data_collator.verbose_list[0]["input_ids"] == dataset_module["train_dataset"][0]["input_ids"]
     else:
         assert data_collator.verbose_list[0]["input_ids"] != dataset_module["train_dataset"][0]["input_ids"]
+
+
+def test_record_sample_loss_unit(tmp_path):
+    trainer = object.__new__(CustomSeq2SeqTrainer)
+    trainer.record_sample_loss = True
+    trainer.state = SimpleNamespace(global_step=5)
+    trainer.args = SimpleNamespace(output_dir=str(tmp_path), overwrite_output_dir=True)
+    trainer._init_sample_loss_recording()
+    trainer._record_sample_loss(["ds_0", "ds_1"], torch.tensor(2.5))
+    trainer.flush_sample_loss()
+
+    lines = (tmp_path / "sample_loss.jsonl").read_text().splitlines()
+    records = [json.loads(line) for line in lines]
+    assert len(records) == 2
+    assert records[0]["micro_step"] == 0 and records[1]["micro_step"] == 0
+    assert records[0]["global_step"] == 5
+    assert [r["sample_id"] for r in records] == ["ds_0", "ds_1"]
+    assert records[0]["loss"] == 2.5
+
+
+def test_record_sample_loss_disabled(tmp_path):
+    trainer = object.__new__(CustomSeq2SeqTrainer)
+    trainer.record_sample_loss = False
+    trainer.state = SimpleNamespace(global_step=0)
+    trainer.args = SimpleNamespace(output_dir=str(tmp_path), overwrite_output_dir=True)
+    trainer._init_sample_loss_recording()
+    trainer._record_sample_loss(["ds_0"], torch.tensor(2.5))
+    assert not (tmp_path / "sample_loss.jsonl").exists()
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_record_sample_loss_integration():
+    output_dir = os.path.join("output", "record_sample_loss")
+    model_args, data_args, training_args, finetuning_args, _ = get_train_args(
+        {"output_dir": output_dir, "record_sample_loss": True, **TRAIN_ARGS}
+    )
+    tokenizer_module = load_tokenizer(model_args)
+    tokenizer = tokenizer_module["tokenizer"]
+    template = get_template_and_fix_tokenizer(tokenizer, data_args)
+    dataset_module = get_dataset(template, model_args, data_args, training_args, stage="sft", **tokenizer_module)
+    model = load_model(tokenizer, model_args, finetuning_args, training_args.do_train)
+    data_collator = MultiModalDataCollatorForSeq2Seq(
+        template=template,
+        pad_to_multiple_of=8,
+        label_pad_token_id=IGNORE_INDEX,
+        **tokenizer_module,
+    )
+    trainer = CustomSeq2SeqTrainer(
+        model=model,
+        args=training_args,
+        finetuning_args=finetuning_args,
+        data_collator=data_collator,
+        **dataset_module,
+        **tokenizer_module,
+    )
+    trainer.train()
+
+    sample_loss_file = os.path.join(output_dir, "sample_loss.jsonl")
+    assert os.path.exists(sample_loss_file)
+    with open(sample_loss_file, encoding="utf-8") as f:
+        records = [json.loads(line) for line in f if line.strip()]
+
+    assert len(records) > 0
+    for record in records:
+        assert set(record.keys()) == {"micro_step", "global_step", "sample_id", "loss"}
+        assert str(record["sample_id"]).startswith("llamafactory/tiny-supervised-dataset_")
+        assert isinstance(record["loss"], float)

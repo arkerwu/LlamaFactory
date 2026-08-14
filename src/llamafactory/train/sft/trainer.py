@@ -19,7 +19,7 @@ import json
 import os
 from functools import partial
 from types import MethodType
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, TextIO, Union
 
 import numpy as np
 import torch
@@ -28,7 +28,7 @@ from typing_extensions import override
 
 from ...extras import logging
 from ...extras.constants import IGNORE_INDEX
-from ..callbacks import SaveProcessorCallback
+from ..callbacks import SampleLossFlushCallback, SaveProcessorCallback
 from ..fp8_utils import configure_fp8_environment, patch_accelerator_for_fp8, verify_fp8_status
 from ..trainer_utils import create_custom_optimizer, create_custom_scheduler
 
@@ -127,6 +127,69 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
         if training_args.fp8 and hasattr(self, "accelerator"):  # verify FP8 status after trainer initialization
             verify_fp8_status(self.accelerator, training_args)
 
+        self.record_sample_loss = finetuning_args.record_sample_loss
+        if self.record_sample_loss:
+            self._init_sample_loss_recording()
+            self.add_callback(SampleLossFlushCallback(self))
+
+    @override
+    def _set_signature_columns_if_needed(self):
+        super()._set_signature_columns_if_needed()
+        if "sample_id" not in self._signature_columns:
+            self._signature_columns.append("sample_id")
+
+    def _init_sample_loss_recording(self) -> None:
+        self._sample_loss_file = os.path.join(self.args.output_dir, "sample_loss.jsonl")
+        self._sample_loss_buffer: list[str] = []
+        self._sample_loss_fh: Optional[TextIO] = None
+        self._sample_loss_step = 0
+        if self.args.overwrite_output_dir and os.path.exists(self._sample_loss_file):
+            os.remove(self._sample_loss_file)
+        elif os.path.exists(self._sample_loss_file):  # resume from checkpoint
+            with open(self._sample_loss_file, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        self._sample_loss_step = max(self._sample_loss_step, int(json.loads(line)["micro_step"]))
+                    except (json.JSONDecodeError, KeyError, ValueError):
+                        continue
+
+            self._sample_loss_step += 1
+
+    def _record_sample_loss(self, sample_ids: list[str], loss) -> None:
+        if not self.record_sample_loss or not sample_ids or loss is None:
+            return
+
+        step = self._sample_loss_step
+        self._sample_loss_step += 1
+        loss_val = float(loss.detach().cpu().item()) if torch.is_tensor(loss) else float(loss)
+        for sample_id in sample_ids:
+            self._sample_loss_buffer.append(
+                json.dumps(
+                    {
+                        "micro_step": step,
+                        "global_step": self.state.global_step,
+                        "sample_id": str(sample_id),
+                        "loss": loss_val,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if len(self._sample_loss_buffer) >= 200:
+            self.flush_sample_loss()
+
+    def flush_sample_loss(self) -> None:
+        if not self.record_sample_loss or not self._sample_loss_buffer:
+            return
+
+        if self._sample_loss_fh is None:
+            os.makedirs(self.args.output_dir, exist_ok=True)
+            self._sample_loss_fh = open(self._sample_loss_file, "a", encoding="utf-8")
+
+        self._sample_loss_fh.write("\n".join(self._sample_loss_buffer) + "\n")
+        self._sample_loss_buffer.clear()
+        self._sample_loss_fh.flush()
+
     @override
     def create_optimizer(self, *args, **kwargs) -> "torch.optim.Optimizer":
         if self.optimizer is None:
@@ -149,6 +212,7 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
 
     @override
     def compute_loss(self, model, inputs, *args, **kwargs):
+        sample_ids = inputs.pop("sample_id", None)
         if self.finetuning_args.use_asft_loss:
             with torch.no_grad():
                 ref_outputs = self.ref_model(
@@ -157,9 +221,15 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
                 )
                 ref_logits = ref_outputs.logits
             outputs = model(**inputs)
-            return self.compute_loss_func(outputs, inputs["labels"], ref_logits)
+            result = self.compute_loss_func(outputs, inputs["labels"], ref_logits)
         else:
-            return super().compute_loss(model, inputs, *args, **kwargs)
+            result = super().compute_loss(model, inputs, *args, **kwargs)
+
+        loss = result[0] if isinstance(result, tuple) else result
+        if self.record_sample_loss and sample_ids and model.training:
+            self._record_sample_loss(sample_ids, loss)
+
+        return result
 
     @override
     def prediction_step(
@@ -174,6 +244,7 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
 
         Subclass and override to inject custom behavior.
         """
+        inputs.pop("sample_id", None)  # prevent sample_id leaking to model(**inputs)
         if self.args.predict_with_generate:  # do not pass labels to model when generate
             labels = inputs.pop("labels", None)
         else:
