@@ -73,6 +73,8 @@ def test_base_collator():
         ],
     }
     for k in batch_input.keys():
+        if k == "sample_id":
+            continue
         assert batch_input[k].eq(torch.tensor(expected_input[k])).all()
 
 
@@ -129,11 +131,14 @@ def test_multimodal_collator():
         expected_input["position_ids"] = [[[0, 1, 2, 3, 1, 1, 1, 1, 1, 1, 1, 1]]] * 3
         expected_input["rope_deltas"] = [[-8]]
 
-    assert batch_input.keys() == expected_input.keys()
+    expected_keys = set(expected_input.keys())
+    assert set(batch_input.keys()) == expected_keys | {"sample_id"}
     for k in batch_input.keys():
         if k == "position_ids" and batch_input[k].dim() == 3 and batch_input[k].shape[0] == 4:
             batch_input[k] = batch_input[k][1:]
 
+        if k == "sample_id":
+            continue
         assert batch_input[k].eq(torch.tensor(expected_input[k])).all()
 
 
@@ -360,6 +365,26 @@ def test_4d_attention_mask():
     )
     assert list(attention_mask_computed.size()) == [2, 1, 6, 6]
     assert torch.all(attention_mask_computed == attention_mask_expected)
+
+
+@pytest.mark.runs_on(["cpu", "mps"])
+def test_collator_sample_id():
+    model_args, data_args, *_ = get_infer_args({"model_name_or_path": TINY_LLAMA3, "template": "default"})
+    tokenizer_module = load_tokenizer(model_args)
+    template = get_template_and_fix_tokenizer(tokenizer_module["tokenizer"], data_args)
+    data_collator = MultiModalDataCollatorForSeq2Seq(
+        template=template,
+        pad_to_multiple_of=8,
+        label_pad_token_id=IGNORE_INDEX,
+        **tokenizer_module,
+    )
+    q = IGNORE_INDEX
+    features = [
+        {"input_ids": [0, 1, 2, 3], "attention_mask": [1, 1, 1, 1], "labels": [q, 1, 2, 3], "sample_id": "ds_0"},
+        {"input_ids": [6, 7, 8], "attention_mask": [1, 1, 1], "labels": [q, 7, 8], "sample_id": "ds_1"},
+    ]
+    batch = data_collator(features)
+    assert batch["sample_id"] == ["ds_0", "ds_1"]
 
 
 if __name__ == "__main__":

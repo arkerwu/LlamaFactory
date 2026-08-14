@@ -329,6 +329,7 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
         batch_images, batch_videos, batch_audios = [], [], []
         batch_imglens, batch_vidlens, batch_audlens, batch_input_ids = [], [], [], []
         packing_params_list: list[dict[str, Any] | None] = []
+        sample_ids: list[Optional[str]] = []
         for feature in features:
             images = feature.pop("images", None) or []
             videos = feature.pop("videos", None) or []
@@ -341,6 +342,7 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
             batch_audlens.append(len(audios))
             batch_input_ids.append(feature["input_ids"])
             packing_params_list.append(feature.pop("packing_params", None))
+            sample_ids.append(feature.pop("sample_id", None))
 
         fake_input_ids = []
         has_dummy_image = False
@@ -421,6 +423,7 @@ class MultiModalDataCollatorForSeq2Seq(DataCollatorForSeq2Seq):
             mm_inputs["mm_token_type_ids"] = torch.tensor(padded, dtype=torch.long)
 
         features: dict[str, torch.Tensor] = super().__call__(features)
+        features["sample_id"] = sample_ids
 
         bsz, seq_len = features["input_ids"].shape[:2]
         is_omni = model_type in [
