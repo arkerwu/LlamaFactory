@@ -120,6 +120,12 @@ def pytest_collection_modifyitems(config: Config, items: list[Item]):
 
 
 @pytest.fixture(autouse=True)
+def _add_project_root_to_sys_path(monkeypatch: MonkeyPatch) -> None:
+    """Ensure project root is on sys.path so scripts/ and src/ are importable."""
+    monkeypatch.syspath_prepend(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+
+@pytest.fixture(autouse=True)
 def _cleanup_distributed_state():
     """Cleanup distributed state after each test."""
     yield
