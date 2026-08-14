@@ -21,8 +21,10 @@ from collections import defaultdict
 def analyze_sample_loss(path: str, z_threshold: float = 2.0) -> list[dict]:
     r"""Aggregate per-sample loss records and flag anomalies (max_loss > mean + z_threshold * std)."""
     samples: dict[str, list[float]] = defaultdict(list)
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
+            if not line.strip():
+                continue
             record = json.loads(line)
             samples[record["sample_id"]].append(record["loss"])
 

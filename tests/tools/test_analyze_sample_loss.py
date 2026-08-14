@@ -20,8 +20,8 @@ from scripts.analyze_sample_loss import analyze_sample_loss
 def test_analyze_sample_loss(tmp_path):
     path = tmp_path / "sample_loss.jsonl"
     # 20 normal samples at loss=2.0 and 1 anomalous at loss=100.0
-    # all_losses = [2.0]*20 + [100.0], mean≈6.76, std≈21.56 (Bessel), threshold≈49.88
-    # 100.0 > 49.88, so ds_2 IS anomalous
+    # all_losses = [2.0]*20 + [100.0], mean≈6.667, std≈21.385 (Bessel), threshold≈49.44
+    # 100.0 > 49.44, so ds_2 IS anomalous
     rows = [(i, "ds_0", 2.0) for i in range(10)]
     rows += [(i, "ds_1", 2.0) for i in range(10, 20)]
     rows += [(20, "ds_2", 100.0)]
