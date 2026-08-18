@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 import shutil
 from typing import TYPE_CHECKING, Any, Optional
@@ -29,6 +30,7 @@ from ..extras.packages import (
     is_mcore_adapter_available,
     is_megatron_bridge_available,
     is_ray_available,
+    is_safetensors_available,
     is_transformers_version_greater_than,
 )
 from ..hparams import RayArguments, get_infer_args, get_ray_args, get_train_args, read_args
@@ -57,6 +59,9 @@ from .trainer_utils import (
 
 if is_ray_available():
     import ray
+
+if is_safetensors_available():
+    from safetensors.torch import load_file, save_file
 
 
 if TYPE_CHECKING:
@@ -173,6 +178,48 @@ def run_exp(args: Optional[dict[str, Any]] = None, callbacks: Optional[list["Tra
         _training_function(config={"args": args, "callbacks": callbacks})
 
 
+def _copy_mtp_weights(source_dir: str, export_dir: str) -> None:
+    r"""Copy MTP (multi-token prediction) weights from the source checkpoint to the export directory.
+
+    HF transformers does not model MTP layers for MTP-capable models (e.g. qwen3_5/qwen3_next),
+    and silently drops `mtp.*` weights on load (`_keys_to_ignore_on_load_unexpected`). MTP weights
+    are only consumed by inference engines (vLLM/SGLang speculative decoding), so they are
+    restored here as a post-export file copy instead of going through the model.
+    """
+    source_files = sorted(f for f in os.listdir(source_dir) if f.endswith(".safetensors"))
+    mtp_weights: dict[str, torch.Tensor] = {}
+    for file_name in source_files:
+        mtp_weights.update(
+            {k: v for k, v in load_file(os.path.join(source_dir, file_name)).items() if k.startswith("mtp.")}
+        )
+    if not mtp_weights:
+        return
+
+    export_files = sorted(f for f in os.listdir(export_dir) if f.endswith(".safetensors"))
+    exported_keys: set[str] = set()
+    for file_name in export_files:
+        exported_keys.update(load_file(os.path.join(export_dir, file_name)).keys())
+    if any(key.startswith("mtp.") for key in exported_keys):  # transformers already saved the MTP layers
+        return
+
+    mtp_file = "model.mtp.safetensors"
+    save_file(mtp_weights, os.path.join(export_dir, mtp_file), metadata={"format": "pt"})
+
+    index_path = os.path.join(export_dir, "model.safetensors.index.json")
+    if os.path.exists(index_path):  # sharded export, update the weight map
+        with open(index_path, encoding="utf-8") as f:
+            index = json.load(f)
+        for key in mtp_weights:
+            index["weight_map"][key] = mtp_file
+        index["metadata"]["total_size"] += sum(t.numel() * t.element_size() for t in mtp_weights.values())
+        with open(index_path, "w", encoding="utf-8") as f:
+            json.dump(index, f, indent=2)
+
+    logger.info_rank0(
+        f"Copied {len(mtp_weights)} MTP tensors from {source_dir} to {os.path.join(export_dir, mtp_file)}."
+    )
+
+
 def export_model(args: Optional[dict[str, Any]] = None) -> None:
     model_args, data_args, finetuning_args, _ = get_infer_args(args)
 
@@ -225,6 +272,14 @@ def export_model(args: Optional[dict[str, Any]] = None) -> None:
             "This is a known issue with transformers>=5.0 for certain model types (e.g. Mistral/Ministral). "
             "Workarounds: (1) use transformers<5.0, or (2) report the issue to the transformers repository."
         ) from err
+
+    if model_args.export_legacy_format:
+        logger.warning_rank0("Skipped MTP weights copy: legacy (non-safetensors) export format is not supported.")
+    else:
+        try:
+            _copy_mtp_weights(model_args.model_name_or_path, model_args.export_dir)
+        except Exception as e:  # copying MTP is best-effort, never block the export
+            logger.warning_rank0(f"Failed to copy MTP weights from {model_args.model_name_or_path}: {e}.")
 
     if model_args.export_hub_model_id is not None:
         # Prepare push arguments (safe_serialization removed in transformers v5.0.0)
