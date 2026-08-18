@@ -18,14 +18,19 @@ import statistics
 from collections import defaultdict
 
 
-def analyze_sample_loss(path: str, z_threshold: float = 2.0) -> list[dict]:
-    r"""Aggregate per-sample loss records and flag anomalies (max_loss > mean + z_threshold * std)."""
+def analyze_sample_loss(path: str, z_threshold: float = 2.0, min_step: int = 0) -> list[dict]:
+    r"""Aggregate per-sample loss records and flag anomalies (max_loss > mean + z_threshold * std).
+
+    Records with `global_step < min_step` are skipped, so early unstable phases can be excluded.
+    """
     samples: dict[str, list[float]] = defaultdict(list)
     with open(path, encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             record = json.loads(line)
+            if record["global_step"] < min_step:
+                continue
             samples[record["sample_id"]].append(record["loss"])
 
     all_losses = [loss for losses in samples.values() for loss in losses]
@@ -74,8 +79,14 @@ def main() -> None:
     parser.add_argument("path", type=str, help="Path to sample_loss.jsonl")
     parser.add_argument("--z-threshold", type=float, default=2.0)
     parser.add_argument("--top", type=int, default=20)
+    parser.add_argument(
+        "--min-step",
+        type=int,
+        default=0,
+        help="Only include records with global_step >= this value (skip early unstable phases).",
+    )
     args = parser.parse_args()
-    print_report(analyze_sample_loss(args.path, args.z_threshold), top=args.top)
+    print_report(analyze_sample_loss(args.path, args.z_threshold, args.min_step), top=args.top)
 
 
 if __name__ == "__main__":

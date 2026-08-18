@@ -38,3 +38,22 @@ def test_analyze_sample_loss(tmp_path):
     assert result[0]["sample_id"] == "ds_2"  # 按 max_loss 降序
     ds_0 = next(r for r in result if r["sample_id"] == "ds_0")
     assert ds_0["count"] == 10
+
+
+def test_analyze_sample_loss_min_step(tmp_path):
+    path = tmp_path / "sample_loss.jsonl"
+    # ds_1 在早期(global_step=0)异常达 100.0，在后期(global_step=5)回到 2.0
+    rows = [
+        {"micro_step": 0, "global_step": 0, "sample_id": "ds_0", "loss": 2.0},
+        {"micro_step": 1, "global_step": 0, "sample_id": "ds_1", "loss": 100.0},
+        {"micro_step": 2, "global_step": 5, "sample_id": "ds_0", "loss": 2.0},
+        {"micro_step": 3, "global_step": 5, "sample_id": "ds_1", "loss": 2.0},
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+
+    result = analyze_sample_loss(str(path), min_step=5)
+    anomalous = [r["sample_id"] for r in result if r["anomalous"]]
+    assert anomalous == []  # 只看后期时 ds_1 不再异常
+    ds_0 = next(r for r in result if r["sample_id"] == "ds_0")
+    assert ds_0["count"] == 1  # 早期记录被过滤
+    assert ds_0["last_loss"] == 2.0

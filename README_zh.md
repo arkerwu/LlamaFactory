@@ -879,7 +879,7 @@ record_sample_loss: true
 python scripts/analyze_sample_loss.py output_dir/sample_loss.jsonl
 ```
 
-分析脚本会按样本聚合 loss 统计（出现次数 / 均值 / 最大值 / 最近一次），标记最大 loss 超过 `mean + 2*std` 的样本（可通过 `--z-threshold` 调整），按数据集分组统计异常数，并输出 top-N 异常清单（`--top`），用于数据清洗。
+分析脚本会按样本聚合 loss 统计（出现次数 / 均值 / 最大值 / 最近一次），标记最大 loss 超过 `mean + 2*std` 的样本（可通过 `--z-threshold` 调整），按数据集分组统计异常数，并输出 top-N 异常清单（`--top`），用于数据清洗。若训练前期 loss 波动较大，可用 `--min-step <N>` 忽略 `global_step` 小于 N 的记录，只看训练后期相对稳定的阶段。
 
 > 注意：当 `per_device_train_batch_size > 1` 时，记录的是 batch 级 loss 并关联到该 batch 内所有样本（粗粒度）。不支持 packing 和 streaming 数据集。
 
