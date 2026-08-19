@@ -877,7 +877,7 @@ Every micro-batch's loss is then written to `output_dir/sample_loss.jsonl` as `{
 python scripts/analyze_sample_loss.py output_dir/sample_loss.jsonl
 ```
 
-The analyzer aggregates per-sample loss statistics, flags samples whose max loss exceeds `mean + 2*std` (configurable via `--z-threshold`), groups anomalies by dataset, and prints the top offenders (`--top`) for data cleaning. Use `--min-step` to ignore records before a given `global_step` and focus on the later, mostly stable training phase.
+The analyzer flags samples whose max loss exceeds `mean + 2*std` (configurable via `--z-threshold`) and is not below their own dataset's median loss — a sample below its dataset median indicates the dataset is shifted as a whole rather than the sample being an outlier (records of the same sample from multi-epoch runs are aggregated first), prints a per-dataset overview (records / samples / mean / median / anomaly count, with losses weighted per sample, useful for spotting datasets that are shifted as a whole), and lists the top offenders (`--top`) as `sample loss vs. its dataset's median loss` so single-sample outliers can be judged against their own baseline. Use `--min-step` to ignore records before a given `global_step` and focus on the later, mostly stable training phase.
 
 > Note: with `per_device_train_batch_size > 1` the batch-level loss is recorded against every sample in that batch (coarse-grained). Packing and streaming datasets are not supported.
 
