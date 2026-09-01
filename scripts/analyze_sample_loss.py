@@ -19,25 +19,36 @@ import unicodedata
 from collections import defaultdict
 
 
-def analyze_sample_loss(path: str, z_threshold: float = 2.0, min_step: int = 0) -> list[dict]:
+def analyze_sample_loss(
+    path: str,
+    z_threshold: float = 2.0,
+    min_step: int = 0,
+    exclude: set[str] | None = None,
+    only: set[str] | None = None,
+) -> list[dict]:
     r"""Aggregate per-sample loss records and flag anomalies.
 
     A sample is anomalous when its max loss exceeds `mean + z_threshold * std` over all records
     AND is not below its dataset's median loss (a sample below its own dataset median indicates
     the dataset is shifted as a whole rather than the sample being an outlier).
     Records with `global_step < min_step` are skipped, so early unstable phases can be excluded.
+    Samples belonging to datasets in `exclude` are skipped entirely.
+    When `only` is given, samples outside it are skipped entirely.
     """
-    samples: dict[str, list[float]] = defaultdict(list)
+    exclude = exclude or set()
+    only = only or set()
+    samples: dict[str, list[tuple[float, int]]] = defaultdict(list)
     with open(path, encoding="utf-8") as f:
         for line in f:
             if not line.strip():
                 continue
             record = json.loads(line)
-            if record["global_step"] < min_step:
+            dataset = record["sample_id"].rpartition("_")[0]
+            if record["global_step"] < min_step or dataset in exclude or (only and dataset not in only):
                 continue
-            samples[record["sample_id"]].append(record["loss"])
+            samples[record["sample_id"]].append((record["loss"], record["global_step"]))
 
-    all_losses = [loss for losses in samples.values() for loss in losses]
+    all_losses = [loss for pairs in samples.values() for loss, _ in pairs]
     if not all_losses:
         return []
     mean = statistics.mean(all_losses)
@@ -46,21 +57,23 @@ def analyze_sample_loss(path: str, z_threshold: float = 2.0, min_step: int = 0) 
 
     # 数据集基线按样本等权计算：每个样本取其损失均值作为代表值，再对全体样本取统计量
     dataset_sample_losses: dict[str, list[float]] = defaultdict(list)
-    for sample_id, losses in samples.items():
-        dataset_sample_losses[sample_id.rpartition("_")[0]].append(sum(losses) / len(losses))
+    for sample_id, pairs in samples.items():
+        dataset_sample_losses[sample_id.rpartition("_")[0]].append(sum(loss for loss, _ in pairs) / len(pairs))
     dataset_medians = {dataset: statistics.median(losses) for dataset, losses in dataset_sample_losses.items()}
 
     rows = []
-    for sample_id, losses in samples.items():
+    for sample_id, pairs in samples.items():
         dataset = sample_id.rpartition("_")[0]
+        max_loss, max_step = max(pairs, key=lambda p: p[0])
         rows.append(
             {
                 "sample_id": sample_id,
-                "count": len(losses),
-                "mean_loss": sum(losses) / len(losses),
-                "max_loss": max(losses),
-                "last_loss": losses[-1],
-                "anomalous": max(losses) > threshold and max(losses) >= dataset_medians[dataset],
+                "count": len(pairs),
+                "mean_loss": sum(loss for loss, _ in pairs) / len(pairs),
+                "max_loss": max_loss,
+                "max_step": max_step,
+                "last_loss": pairs[-1][0],
+                "anomalous": max_loss > threshold and max_loss >= dataset_medians[dataset],
             }
         )
 
@@ -125,9 +138,9 @@ def print_report(rows: list[dict], top: int = 20) -> None:
     detail = []
     for r in anomalous[:top]:
         dataset, _, index = r["sample_id"].rpartition("_")
-        detail.append([dataset, index, f"{r['max_loss']:.4f}", f"{dataset_medians[dataset]:.4f}"])
+        detail.append([dataset, index, f"{r['max_loss']:.4f}", str(r["max_step"]), f"{dataset_medians[dataset]:.4f}"])
     if detail:
-        _format_table(["数据集", "序号", "损失", "数据集中位"], detail)
+        _format_table(["数据集", "序号", "损失", "step", "数据集中位"], detail)
     else:
         print("无")
 
@@ -143,8 +156,25 @@ def main() -> None:
         default=0,
         help="只统计 global_step >= 该值的记录（用于跳过前期不稳定的训练阶段）。",
     )
+    parser.add_argument(
+        "--exclude",
+        type=str,
+        nargs="+",
+        default=[],
+        help="排除的数据集名称，可传多个，如 --exclude common.json identity.json。",
+    )
+    parser.add_argument(
+        "--only",
+        type=str,
+        nargs="+",
+        default=[],
+        help="只统计这些数据集，可传多个，如 --only bgd.json wms.json。",
+    )
     args = parser.parse_args()
-    print_report(analyze_sample_loss(args.path, args.z_threshold, args.min_step), top=args.top)
+    print_report(
+        analyze_sample_loss(args.path, args.z_threshold, args.min_step, set(args.exclude), set(args.only)),
+        top=args.top,
+    )
 
 
 if __name__ == "__main__":
