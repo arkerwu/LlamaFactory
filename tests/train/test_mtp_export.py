@@ -93,6 +93,42 @@ def test_skips_when_export_already_has_mtp(source_dir, export_dir):
     )
 
 
+def test_updates_variant_named_index(source_dir, export_dir):
+    import os
+
+    _write_shard(source_dir, {"mtp.0.fc.weight": torch.ones(3)})
+    _write_shard(export_dir, {"model.layers.0.weight": torch.zeros(2)}, "model.fp16-00001-of-00001.safetensors")
+    index_name = "model.fp16.safetensors.index.json"  # transformers _add_variant format
+    with open(f"{export_dir}/{index_name}", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "metadata": {"total_size": 8},
+                "weight_map": {"model.layers.0.weight": "model.fp16-00001-of-00001.safetensors"},
+            },
+            f,
+        )
+
+    _copy_mtp_weights(source_dir, export_dir)
+
+    with open(f"{export_dir}/{index_name}", encoding="utf-8") as f:
+        updated = json.load(f)
+    assert updated["weight_map"]["mtp.0.fc.weight"] == "model.mtp.safetensors"
+    assert updated["metadata"]["total_size"] == 8 + 3 * 4
+
+
+def test_no_index_file_leaves_mtp_alone(source_dir, export_dir):
+    import os
+
+    _write_shard(source_dir, {"mtp.0.fc.weight": torch.ones(3)})
+    _write_shard(export_dir, {"model.layers.0.weight": torch.zeros(2)}, "model-00001-of-00001.safetensors")
+    # No index file present (single-file export)
+
+    _copy_mtp_weights(source_dir, export_dir)
+
+    assert any(f.endswith(".mtp.safetensors") for f in os.listdir(export_dir))
+    assert not any(f.endswith(".safetensors.index.json") for f in os.listdir(export_dir))
+
+
 def test_empty_source_is_noop(source_dir, export_dir):
     _write_shard(export_dir, {"model.layers.0.weight": torch.zeros(2)})
 

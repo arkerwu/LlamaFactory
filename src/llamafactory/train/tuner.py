@@ -23,7 +23,11 @@ from transformers import EarlyStoppingCallback, PreTrainedModel
 
 from ..data import get_template_and_fix_tokenizer
 from ..extras import logging
-from ..extras.constants import V_HEAD_SAFE_WEIGHTS_NAME, V_HEAD_WEIGHTS_NAME
+from ..extras.constants import (
+    SAFE_WEIGHTS_INDEX_NAME,
+    V_HEAD_SAFE_WEIGHTS_NAME,
+    V_HEAD_WEIGHTS_NAME,
+)
 from ..extras.misc import find_available_port, get_device_name, get_torch_device, infer_optim_dtype
 from ..extras.packages import (
     is_hyper_parallel_available,
@@ -205,13 +209,22 @@ def _copy_mtp_weights(source_dir: str, export_dir: str) -> None:
     mtp_file = "model.mtp.safetensors"
     save_file(mtp_weights, os.path.join(export_dir, mtp_file), metadata={"format": "pt"})
 
-    index_path = os.path.join(export_dir, "model.safetensors.index.json")
-    if os.path.exists(index_path):  # sharded export, update the weight map
+    mtp_bytes = sum(t.numel() * t.element_size() for t in mtp_weights.values())
+    # Match the safetensors index written by transformers, including variant names
+    # like `model.fp16.safetensors.index.json` produced by `_add_variant`.
+    index_suffix = SAFE_WEIGHTS_INDEX_NAME.split(".", 1)[1]  # "safetensors.index.json"
+    index_paths = [
+        os.path.join(export_dir, name)
+        for name in os.listdir(export_dir)
+        if name.endswith(index_suffix)
+    ]
+    for index_path in index_paths:  # sharded export (incl. variant names like model.fp16.safetensors.index.json)
         with open(index_path, encoding="utf-8") as f:
             index = json.load(f)
         for key in mtp_weights:
             index["weight_map"][key] = mtp_file
-        index["metadata"]["total_size"] += sum(t.numel() * t.element_size() for t in mtp_weights.values())
+        if "total_size" in index["metadata"]:
+            index["metadata"]["total_size"] += mtp_bytes
         with open(index_path, "w", encoding="utf-8") as f:
             json.dump(index, f, indent=2)
 
